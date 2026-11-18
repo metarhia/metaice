@@ -1,0 +1,62 @@
+{
+  "name": "metaice",
+  "version": "0.0.1",
+  "author": "Timur Shemsedinov <timur.shemsedinov@gmail.com>",
+  "description": "STUN and TURN protocol tools for Metarhia",
+  "license": "MIT",
+  "keywords": [
+    "metaice",
+    "metarhia",
+    "webrtc",
+    "stun",
+    "turn",
+    "ice"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/metarhia/metaice"
+  },
+  "bugs": {
+    "url": "https://github.com/metarhia/metaice/issues"
+  },
+  "homepage": "https://github.com/metarhia/metaice#readme",
+  "funding": {
+    "type": "patreon",
+    "url": "https://www.patreon.com/tshemsedinov"
+  },
+  "main": "metaice.js",
+  "types": "metaice.d.ts",
+  "bin": {
+    "metaice": "bin/metaice.js"
+  },
+  "metarhia": {
+    "protocols": [
+      "stun.turn",
+      "stun.nat-discovery"
+    ]
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "metaice.js",
+    "metaice.d.ts",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "test": "npm run -s lint && npm run types && node --test",
+    "test:browser": "node --test browser/turn.integration.js",
+    "types": "tsc -p tsconfig.json",
+    "lint": "eslint . && prettier --check \"**/*.{js,jsx,mjs,cjs,ts,tsx,json,md,mdx,yaml,yml}\"",
+    "fix": "eslint . --fix && prettier --write \"**/*.{js,jsx,mjs,cjs,ts,tsx,json,md,mdx,yaml,yml}\""
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "eslint": "^10.14.0",
+    "eslint-config-metarhia": "^10.0.1",
+    "prettier": "^3.10.0",
+    "typescript": "^7.0.2"
+  }
+}
