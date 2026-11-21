@@ -2,8 +2,8 @@
 
 ICE servers for WebRTC: STUN and TURN servers and STUN protocol tools
 for Node.js 22 and later, with no runtime dependencies. The package exports
-`IceServer`, `iceServers`, `credentials`, `start`, `protocols`, and the
-codec as `stun`.
+`IceServer`, `iceServers`, `credentials`, `isPrivate`, `start`,
+`protocols`, and the codec as `stun`.
 Requiring the package and constructing a server open no sockets or timers.
 
 ## Install
@@ -117,6 +117,9 @@ peer IP and port. Expired permissions and channels stop forwarding even
 before the sweep timer runs. Each allocation has a one-second token
 bucket shared by both traffic directions. Enable `allowPrivatePeers`
 only when those peers should be reachable through your TURN server.
+`isPrivate(address)` exports the same policy: it returns `true` for a
+loopback, private, link-local, multicast, reserved, mapped or non-IP string
+and `false` for a public address.
 
 ## CLI
 
