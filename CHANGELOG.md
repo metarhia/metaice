@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Export `isPrivate(address)`, the private address policy of relay peers,
+  from the package and its typings.
 - Add an impress provider: `start` with `context.thread` returns
   `{ connection, datagram, stop }` without binding, slices relay ports,
   honors `context.protocols`, and sweeps allocations while TURN is on.

@@ -234,6 +234,7 @@ interface IceServerEntry {
 
 declare function credentials(options: CredentialsOptions): TurnCredentials;
 declare function iceServers(options: IceServersOptions): IceServerEntry[];
+declare function isPrivate(address: string): boolean;
 
 export {
   StunKind,
@@ -264,4 +265,5 @@ export {
   IceServerEntry,
   credentials,
   iceServers,
+  isPrivate,
 };

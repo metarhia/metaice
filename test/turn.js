@@ -5,9 +5,8 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 
 const helpers = require('./turn-helpers.js');
-const { credentials, iceServers } = require('../metaice.js');
+const { credentials, iceServers, isPrivate } = require('../metaice.js');
 const { createNonce } = require('../lib/credentials.js');
-const { isPrivate } = require('../lib/addresses.js');
 
 const { loadIce, turnOptions, clientAuth, packet, codeOf, TRANSPORT } = helpers;
 const REMOTE = { address: '127.0.0.1', port: 50000, family: 'IPv4' };
@@ -168,6 +167,7 @@ test('private peer policy covers IPv4, IPv6 and mapped addresses', () => {
     'ff02::1',
     '::ffff:127.0.0.1',
     '::ffff:8.8.8.8',
+    'localhost',
   ];
   for (const address of blocked) assert.equal(isPrivate(address), true);
   assert.equal(isPrivate('8.8.8.8'), false);
