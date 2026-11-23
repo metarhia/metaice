@@ -21,11 +21,11 @@ const loadIce = (options = {}) => {
   return { ice, stun, config: ice.options, logs };
 };
 
-const turnOptions = (allowPrivatePeers = true) => ({
-  secret: crypto.randomBytes(32).toString('hex'),
-  allowPrivatePeers,
-  publicAddress: '127.0.0.1',
-});
+const turnOptions = (allowPrivatePeers = true) => {
+  const secret = crypto.randomBytes(32).toString('hex');
+  const publicAddress = '127.0.0.1';
+  return { secret, allowPrivatePeers, publicAddress };
+};
 
 const clientAuth = (ice, stun, peer, address = '127.0.0.1') => {
   const identity = credentials({ ...ice.options, peer });
