@@ -36,13 +36,14 @@ main().catch(console.error);
 
 `listen()` opens UDP4 on `listen`, UDP6 on `::` with `ipv6Only`, and TCP
 on `listen`. The listeners share one port. With `port: 0`, UDP4 selects
-the port and UDP6 and TCP bind that same port. When `tlsPort` is nonzero,
-`listen()` also opens TLS on `listen` and that port. `server.ports`
-reports `{ udp, tcp, tls }`. `tls` is the bound TLS port, or zero when
-TLS is off. Both address families must bind successfully. A bind failure
-rejects `listen()` after closing the listeners, connections and relays it
-opened, and logs a warning through `console`. One server instance owns
-every socket and timer.
+the port and UDP6 and TCP bind that same port. If the selected port is
+already in use, `listen()` closes the partial set and tries another port,
+up to ten attempts. When `tlsPort` is nonzero, `listen()` also opens TLS
+on `listen` and that port. `server.ports` reports `{ udp, tcp, tls }`.
+`tls` is the bound TLS port, or zero when TLS is off. Both address families
+must bind successfully. A final bind failure rejects `listen()` after
+closing the listeners, connections and relays it opened, and logs a
+warning through `console`. One server instance owns every socket and timer.
 
 Binding responses carry the client's XOR-MAPPED-ADDRESS, SOFTWARE, and
 FINGERPRINT. Unknown required attributes receive a `420` response with a
@@ -134,9 +135,11 @@ and `false` for a public address.
 Any other argument, a missing file, or a value that is not a plain object
 prints the error and exits 1. After `listen()`, the process logs the bound
 `{ udp, tcp, tls }` ports. `SIGINT` and `SIGTERM` call `close()` once and
-exit 0. A second signal does not start another close. If `close()` fails,
-the process prints the error and exits 1. A failed `listen()` prints the
-error and exits 1.
+exit 0 when delivered to the process. On Windows, use Ctrl+C to send
+`SIGINT` from the terminal. Node's `kill('SIGTERM')` force-terminates
+Windows processes. A second signal does not start another close. If
+`close()` fails, the process prints the error and exits 1. A failed
+`listen()` prints the error and exits 1.
 
 ```sh
 metaice config/ice.js
@@ -317,7 +320,7 @@ npm test
 | `node --test test/turn-tcp.js`    | TCP framing, padding, close, and TLS TURN                      |
 | `node --test test/service.js`     | Service start, stop, and a require that does not listen        |
 | `node --test test/provider.js`    | Provider sockets, relay slices, protocols, and relay shutdown  |
-| `node --test test/cli.js`         | CLI Binding, SIGTERM exit 0, and a taken port exit 1           |
+| `node --test test/cli.js`         | CLI Binding, graceful shutdown, and a taken port exit 1        |
 | `npm run test:browser`            | Chrome relay over TURN UDP, then TCP                           |
 
 The codec tests cover RFC 5769 request and IPv4/IPv6 response vectors,

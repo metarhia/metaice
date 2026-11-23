@@ -382,15 +382,17 @@ test('STUN Binding server', { timeout: 30000 }, async (t) => {
       const shutdownErrors = [];
       let isClosing = false;
       const onError = (error) => shutdownErrors.push({ error, isClosing });
-      client.on('error', onError);
-      const clientClosed = new Promise((resolve) => {
-        const onClose = () => {
-          client.off('error', onError);
-          resolve();
-        };
-        client.once('close', onClose);
-      });
-      const idleClosed = once(idle, 'close');
+      const waitForClose = (socket) =>
+        new Promise((resolve) => {
+          const onClose = () => {
+            socket.off('error', onError);
+            resolve();
+          };
+          socket.on('error', onError);
+          socket.once('close', onClose);
+        });
+      const clientClosed = waitForClose(client);
+      const idleClosed = waitForClose(idle);
       client.write(request().subarray(0, 3));
       isClosing = true;
       await Promise.all([
@@ -407,7 +409,7 @@ test('STUN Binding server', { timeout: 30000 }, async (t) => {
         assert.strictEqual(error.syscall, 'read');
       }
       if (shutdownErrors.length > 0) {
-        t.diagnostic('Forced shutdown reset a client with pending input');
+        t.diagnostic('Forced shutdown caused a TCP read reset');
       }
       assert.ok(client.closed);
       assert.ok(idle.closed);
@@ -419,7 +421,7 @@ test('STUN Binding server', { timeout: 30000 }, async (t) => {
   );
 
   await t.test(
-    'occupied TCP port rejects and closes both UDP listeners',
+    'fixed and automatic ports handle a TCP bind conflict',
     async (t) => {
       const occupied = net.createServer();
       t.after(() => closeTcpListener(occupied));
@@ -446,6 +448,27 @@ test('STUN Binding server', { timeout: 30000 }, async (t) => {
       await server.close();
       await closeUdp(udp4);
       await closeUdp(udp6);
+
+      warnings.length = 0;
+      const automatic = createServer(t, { console: logger });
+      const bindListener = automatic.bindUdp.bind(automatic);
+      let firstPort = port;
+      automatic.bindUdp = (transport, address, requested) => {
+        if (transport !== 'udp4' || requested !== 0) {
+          return bindListener(transport, address, requested);
+        }
+        const selected = firstPort;
+        firstPort = 0;
+        return bindListener(transport, address, selected);
+      };
+      await automatic.listen();
+      assert.ok(
+        warnings.some((line) => line.startsWith('ICE tcp: listen EADDRINUSE')),
+      );
+      assert.ok(automatic.ports.udp > 0);
+      assert.notStrictEqual(automatic.ports.udp, port);
+      assert.strictEqual(automatic.ports.tcp, automatic.ports.udp);
+
       await closeTcpListener(occupied);
       const replacement = createServer(t, { port });
       await replacement.listen();
