@@ -500,9 +500,9 @@ test(
     const handle = await start(options, threadContext(logs, 0, 1));
     t.after(() => handle.stop());
     assertHandler(handle);
-    await reserved.release();
     const pair = await openTcp(t);
     const peer = await openUdp(t);
+    await reserved.release();
     const request = packet(stun, 'binding', [], null);
     const readable = once(pair.accepted, 'readable');
     pair.client.write(request);
@@ -536,9 +536,9 @@ test(
     const handle = await start(options, threadContext(logs, 0, 1));
     t.after(() => handle.stop());
     assertHandler(handle);
-    await reserved.release();
     const pair = await openTls(t);
     const peer = await openUdp(t);
+    await reserved.release();
     handle.connection(pair.accepted, connectionInfo(pair.accepted, true));
     const link = {
       deliver: (buffer) => pair.client.write(buffer),
@@ -566,10 +566,10 @@ test(
     const handle = await start(options, threadContext(logs, 0, 1, enabled));
     t.after(() => handle.stop());
     assertHandler(handle);
-    await reserved.release();
     const impress = await openUdp(t);
     const client = await openUdp(t);
     const peer = await openUdp(t);
+    await reserved.release();
     const remote = {
       address: client.remote().address,
       port: client.remote().port,
@@ -597,7 +597,6 @@ test(
     const halves = await findHalves(t);
     const leftSocket = halves.sockets[0];
     const rightSocket = halves.sockets[1];
-    await closeUdp(leftSocket);
     const logs = [];
     const options = providerOptions(halves.range);
     const secret = options.secret;
@@ -606,6 +605,7 @@ test(
     assertHandler(left);
     const impress = await openUdp(t);
     const client = await openUdp(t);
+    await closeUdp(leftSocket);
     const remote = client.remote();
     const deliver = (buffer) => left.datagram(buffer, remote, impress.socket);
     const link = { deliver, next: client.next };
@@ -618,11 +618,11 @@ test(
       halves.range[0] + 99,
     ]);
     await left.stop();
-    await closeUdp(rightSocket);
     const rightLogs = [];
     const right = await start(options, threadContext(rightLogs, 1, 2));
     t.after(() => right.stop());
     const other = await openUdp(t);
+    await closeUdp(rightSocket);
     const rightLink = {
       deliver: (buffer) => {
         right.datagram(buffer, other.remote(), impress.socket);
@@ -642,14 +642,18 @@ test(
 
     const uneven = await reserveRange(t, 5);
     const unevenOptions = providerOptions(uneven.range);
+    // Bind clients while the relay ports are still reserved.
+    const lowClients = [];
+    for (let i = 0; i < 3; i++) lowClients.push(await openUdp(t));
+    const overflow = await openUdp(t);
+    const highClient = await openUdp(t);
     await uneven.release();
     const lowLogs = [];
     const low = await start(unevenOptions, threadContext(lowLogs, 0, 2));
     t.after(() => low.stop());
     const lowAuth = authFor(unevenOptions, 'extra-peer');
     const ports = [];
-    for (let i = 0; i < 3; i++) {
-      const endpoint = await openUdp(t);
+    for (const endpoint of lowClients) {
       const lowLink = {
         deliver: (buffer) => {
           low.datagram(buffer, endpoint.remote(), impress.socket);
@@ -670,7 +674,6 @@ test(
       uneven.range[0] + 1,
       uneven.range[0] + 2,
     ]);
-    const overflow = await openUdp(t);
     const overflowLink = {
       deliver: (buffer) => {
         low.datagram(buffer, overflow.remote(), impress.socket);
@@ -688,7 +691,6 @@ test(
     const highLogs = [];
     const high = await start(unevenOptions, threadContext(highLogs, 1, 2));
     t.after(() => high.stop());
-    const highClient = await openUdp(t);
     const highLink = {
       deliver: (buffer) => {
         high.datagram(buffer, highClient.remote(), impress.socket);
@@ -752,9 +754,9 @@ test(
     const options = providerOptions(reserved.range);
     const handle = await start(options, threadContext(logs, 0, 1));
     t.after(() => handle.stop());
-    await reserved.release();
     const impress = await openUdp(t);
     const client = await openUdp(t);
+    await reserved.release();
     const link = {
       deliver: (buffer) => {
         handle.datagram(buffer, client.remote(), impress.socket);
@@ -791,9 +793,9 @@ test(
     });
     const handle = await start(options, threadContext(logs, 0, 1));
     t.after(() => handle.stop());
-    await reserved.release();
     const impress = await openUdp(t);
     const client = await openUdp(t);
+    await reserved.release();
     const link = {
       deliver: (buffer) => {
         handle.datagram(buffer, client.remote(), impress.socket);

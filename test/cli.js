@@ -172,11 +172,13 @@ const collect = (stream) => {
   return () => text;
 };
 
-const spawnCli = (t, file) => {
+const spawnCli = (t, file, ipc = false) => {
+  const stdio = ['ignore', 'pipe', 'pipe'];
+  if (ipc) stdio.push('ipc');
   const child = spawn(process.execPath, [bin, file], {
     cwd: root,
     env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio,
   });
   const output = collect(child.stdout);
   const errors = collect(child.stderr);
@@ -188,27 +190,36 @@ const spawnCli = (t, file) => {
   return { child, output, errors };
 };
 
-const waitForCode = async (child, signal = '') => {
+const waitForCode = async (child) => {
   const timer = setTimeout(() => {
     child.kill('SIGKILL');
   }, EXIT_MS);
-  if (signal) child.kill(signal);
-  const result = await once(child, 'close');
-  clearTimeout(timer);
-  return result[0];
+  try {
+    const [code] = await once(child, 'close');
+    return code;
+  } finally {
+    clearTimeout(timer);
+  }
 };
 
 const configPath = (port, extension) =>
   path.join(os.tmpdir(), `metaice-${process.pid}-${port}${extension}`);
 
 test('CLI', async (t) => {
-  await t.test('answers Binding and exits 0 on SIGTERM', async (t) => {
+  await t.test('answers Binding and shuts down cleanly', async (t) => {
     const port = await reservePort();
     const file = configPath(port, '.js');
     const jsString = (value) => `'${value}'`;
+    const isWindows = process.platform === 'win32';
+    // kill('SIGTERM') force-terminates child processes on Windows.
+    const onMessage =
+      `process.once(${jsString('message')}, ` +
+      `() => process.emit(${jsString('SIGTERM')}));`;
+    const setup = isWindows ? [onMessage, ''] : [];
     const source = [
       `${jsString('use strict')};`,
       '',
+      ...setup,
       'module.exports = {',
       `  listen: ${jsString('127.0.0.1')},`,
       `  port: ${port},`,
@@ -218,7 +229,7 @@ test('CLI', async (t) => {
     ].join('\n');
     await fs.writeFile(file, source);
     t.after(() => fs.rm(file, { force: true }));
-    const cli = spawnCli(t, file);
+    const cli = spawnCli(t, file, isWindows);
     const socket = dgram.createSocket('udp4');
     t.after(() => closeUdp(socket));
     await bindUdp(socket);
@@ -229,7 +240,10 @@ test('CLI', async (t) => {
     assert.equal(message.kind, 'success');
     assert.equal(message.method, stun.METHODS.binding);
     assert.equal(stun.verifyFingerprint(reply, message), true);
-    const code = await waitForCode(cli.child, 'SIGTERM');
+    const closed = waitForCode(cli.child);
+    if (isWindows) cli.child.send('shutdown');
+    else cli.child.kill('SIGTERM');
+    const code = await closed;
     assert.equal(code, 0, cli.errors());
     assert.match(cli.output(), new RegExp(`tcp: ${port}`));
     await bindTcp(port);
