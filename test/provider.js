@@ -15,8 +15,8 @@ const { protocols, stun } = require('../metaice.js');
 const { relaySlice, start } = require('../lib/service.js');
 const helpers = require('./turn-helpers.js');
 
-const { turnOptions, clientAuth, packet, codeOf, peerAttribute, TRANSPORT } =
-  helpers;
+const { turnOptions, clientAuth, packet, codeOf } = helpers;
+const { peerAttribute, TRANSPORT } = helpers;
 
 const SLICE_ERROR = 'Invalid relay thread or port range';
 const TLS_KEY = path.join(__dirname, 'fixtures/turn-key.pem');
@@ -48,13 +48,15 @@ const reservePort = (port) =>
   new Promise((resolve, reject) => {
     const socket = dgram.createSocket('udp4');
     let settled = false;
-    const fail = (error) => {
+    const fail = async (error) => {
       if (settled) return;
       settled = true;
-      closeUdp(socket).then(
-        () => reject(error),
-        () => reject(error),
-      );
+      try {
+        await closeUdp(socket);
+      } catch {
+        // socket already closed
+      }
+      reject(error);
     };
     socket.once('error', fail);
     socket.once('listening', () => {
@@ -132,13 +134,10 @@ const findHalves = async (t) => {
 };
 
 const threadContext = (logs, index, count, protocols) => {
-  const context = {
-    console: createLogger(logs),
-    mode: 'test',
-    thread: { group: 'ice', index, count },
-  };
-  if (protocols) context.protocols = protocols;
-  return context;
+  const console = createLogger(logs);
+  const mode = 'test';
+  const thread = { group: 'ice', index, count };
+  return { console, mode, thread, protocols };
 };
 
 const providerOptions = (relayPorts, extra = {}) => ({
@@ -271,18 +270,17 @@ const openUdp = async (t) => {
   return { socket, next, remote, send, port: socket.address().port };
 };
 
-const connectionInfo = (socket, tlsOn) => ({
-  port: socket.localPort,
-  transport: 'tcp',
-  tls: tlsOn,
-  servername: socket.servername ?? '',
-  alpn: socket.alpnProtocol ?? '',
-  remote: {
-    address: socket.remoteAddress,
-    port: socket.remotePort,
-    family: socket.remoteFamily,
-  },
-});
+const connectionInfo = (socket, tlsOn) => {
+  const port = socket.localPort;
+  const transport = 'tcp';
+  const tls = tlsOn;
+  const servername = socket.servername ?? '';
+  const alpn = socket.alpnProtocol ?? '';
+  const address = socket.remoteAddress;
+  const family = socket.remoteFamily;
+  const remote = { address, port: socket.remotePort, family };
+  return { port, transport, tls, servername, alpn, remote };
+};
 
 const openTcp = async (t) => {
   const listener = net.createServer();
@@ -413,7 +411,10 @@ const proveTurn = async (link) => {
     assert.deepEqual(frame.subarray(9), Buffer.alloc(3));
   }
   const label = `client=${link.label}`;
-  const logged = link.logs.some((line) => String(line).includes(label));
+  const logged = link.logs.some((line) => {
+    if (typeof line !== 'string') return false;
+    return line.includes(label);
+  });
   assert.equal(logged, true);
   assertNoListen(link.logs);
   return relay;

@@ -570,9 +570,9 @@ test(
     let binds = 0;
     let received = 0;
     const dispatch = ice.dispatch.bind(ice);
-    ice.dispatch = async (...args) => {
+    ice.dispatch = async (client, buffer, remote) => {
       received++;
-      return dispatch(...args);
+      return dispatch(client, buffer, remote);
     };
     ice.openRelay = async (allocation) => {
       binds++;
