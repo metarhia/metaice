@@ -49,7 +49,7 @@ const main = async () => {
   }
   let service = null;
   let isStopping = false;
-  const exitAfterClose = async () => {
+  const stop = async () => {
     try {
       await service.stop();
       process.exit(0);
@@ -57,23 +57,16 @@ const main = async () => {
       fail(error);
     }
   };
-  const beginClose = () => {
+  const shutdown = () => {
     if (isStopping) return;
     isStopping = true;
-    return void exitAfterClose();
-  };
-  const shutdown = () => {
-    if (service) {
-      beginClose();
-      return;
-    }
-    isStopping = true;
+    if (service) return void stop();
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
   const context = { name: 'metaice', console, mode: '' };
   service = await start(options, context);
-  if (isStopping) beginClose();
+  if (isStopping) await stop();
 };
 
 main().catch(fail);
