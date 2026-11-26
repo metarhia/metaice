@@ -3,56 +3,18 @@
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
 const { once } = require('node:events');
-const net = require('node:net');
 const path = require('node:path');
 const { test } = require('node:test');
-const timers = require('node:timers/promises');
 
 const { start } = require('../metaice.js');
+const { createLogger, waitTcpFree } = require('./turn-helpers.js');
 
-const delay = timers.setTimeout;
 const EXIT_MS = 4000;
-
-const createLogger = (logs) => ({
-  log: (value) => logs.push(value),
-  info: (value) => logs.push(value),
-  warn: (value) => logs.push(value),
-  debug: (value) => logs.push(value),
-  error: (value) => logs.push(value),
-});
 
 const readPorts = (logs) => {
   const ports = logs.find((entry) => entry && typeof entry.tcp === 'number');
   assert.ok(ports);
   return ports;
-};
-
-const listenTcp = (port) =>
-  new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once('error', reject);
-    server.listen({ port, host: '127.0.0.1' }, () => {
-      server.close((error) => {
-        if (error) reject(error);
-        else resolve();
-      });
-    });
-  });
-
-const bindTcp = async (port) => {
-  const deadline = Date.now() + 2000;
-  let failure = new Error('Port stayed busy');
-  while (Date.now() < deadline) {
-    try {
-      await listenTcp(port);
-      return;
-    } catch (error) {
-      failure = error;
-      if (error.code !== 'EADDRINUSE') throw error;
-      await delay(20);
-    }
-  }
-  throw failure;
 };
 
 const waitForExit = async (child) => {
@@ -107,7 +69,7 @@ test('start prefers context.console and frees the port', async () => {
   const stopping = handle.stop();
   assert.equal(typeof stopping.then, 'function');
   await stopping;
-  await bindTcp(port);
+  await waitTcpFree(port);
 });
 
 test('start keeps options.console when context has no console', async () => {
@@ -125,7 +87,7 @@ test('start keeps options.console when context has no console', async () => {
   const port = ports.tcp;
   assert.ok(port > 0);
   await handle.stop();
-  await bindTcp(port);
+  await waitTcpFree(port);
 });
 
 test('start uses options.console when context is missing', async () => {
@@ -140,5 +102,5 @@ test('start uses options.console when context is missing', async () => {
   const port = ports.tcp;
   assert.ok(port > 0);
   await handle.stop();
-  await bindTcp(port);
+  await waitTcpFree(port);
 });
