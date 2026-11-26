@@ -17,88 +17,12 @@ const helpers = require('./turn-helpers.js');
 
 const { turnOptions, clientAuth, packet, codeOf } = helpers;
 const { peerAttribute, TRANSPORT } = helpers;
+const { channelNumber, channelPacket, createLogger } = helpers;
+const { closeUdp, reservePort, reserveRange } = helpers;
 
 const SLICE_ERROR = 'Invalid relay thread or port range';
 const TLS_KEY = path.join(__dirname, 'fixtures/turn-key.pem');
 const TLS_CERT = path.join(__dirname, 'fixtures/turn-cert.pem');
-
-const createLogger = (logs) => ({
-  log: (value) => logs.push(value),
-  info: (value) => logs.push(value),
-  warn: (value) => logs.push(value),
-  debug: (value) => logs.push(value),
-  error: (value) => logs.push(value),
-});
-
-const closeUdp = (socket) =>
-  new Promise((resolve, reject) => {
-    try {
-      socket.close((error) => {
-        const closed = error?.code === 'ERR_SOCKET_DGRAM_NOT_RUNNING';
-        if (error && !closed) reject(error);
-        else resolve();
-      });
-    } catch (error) {
-      if (error.code === 'ERR_SOCKET_DGRAM_NOT_RUNNING') resolve();
-      else reject(error);
-    }
-  });
-
-const reservePort = (port) =>
-  new Promise((resolve, reject) => {
-    const socket = dgram.createSocket('udp4');
-    let settled = false;
-    const fail = async (error) => {
-      if (settled) return;
-      settled = true;
-      try {
-        await closeUdp(socket);
-      } catch {
-        // socket already closed
-      }
-      reject(error);
-    };
-    socket.once('error', fail);
-    socket.once('listening', () => {
-      if (settled) return;
-      settled = true;
-      socket.off('error', fail);
-      socket.on('error', (error) => {
-        throw error;
-      });
-      resolve(socket);
-    });
-    try {
-      socket.bind(port, '127.0.0.1');
-    } catch (error) {
-      fail(error);
-    }
-  });
-
-const reserveRange = async (t, count) => {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    const first = await reservePort(0);
-    const port = first.address().port;
-    const sockets = [first];
-    const releaseOne = (socket) => closeUdp(socket);
-    const release = () => Promise.all(sockets.map(releaseOne));
-    if (port + count > 65536) {
-      await release();
-      continue;
-    }
-    try {
-      for (let i = 1; i < count; i++) {
-        sockets.push(await reservePort(port + i));
-      }
-      t.after(release);
-      return { release, range: [port, port + count - 1] };
-    } catch (error) {
-      await release();
-      if (error.code !== 'EADDRINUSE') throw error;
-    }
-  }
-  throw new Error('No contiguous UDP relay range available');
-};
 
 const reserveExact = async (ports) => {
   const sockets = [];
@@ -156,22 +80,7 @@ const authFor = (options, peer) => {
       secret: options.secret,
     },
   };
-  return clientAuth(ice, stun, peer, '127.0.0.1');
-};
-
-const channelNumber = (number) => {
-  const value = Buffer.alloc(4);
-  value.writeUInt16BE(number, 0);
-  return { type: 0x000c, value };
-};
-
-const channelPacket = (number, data) => {
-  const padded = Math.ceil(data.length / 4) * 4;
-  const buffer = Buffer.alloc(4 + padded);
-  buffer.writeUInt16BE(number, 0);
-  buffer.writeUInt16BE(data.length, 2);
-  data.copy(buffer, 4);
-  return buffer;
+  return clientAuth(ice, peer, '127.0.0.1');
 };
 
 const openFrames = (socket) => {
@@ -353,7 +262,7 @@ const assertNoListen = (logs) => {
 
 const sendRequest = (link, method, attributes, auth, options) => {
   const reply = link.next();
-  link.deliver(packet(stun, method, attributes, auth, options));
+  link.deliver(packet(method, attributes, auth, options));
   return reply;
 };
 
@@ -369,7 +278,7 @@ const assertBinding = (buffer, port) => {
 };
 
 const assertAllocated = (buffer, key) => {
-  assert.equal(codeOf(stun, buffer), 0);
+  assert.equal(codeOf(buffer), 0);
   const message = stun.decode(buffer);
   assert.equal(stun.verifyIntegrity(buffer, message, key), true);
   assert.equal(stun.verifyFingerprint(buffer, message), true);
@@ -381,24 +290,24 @@ const proveTurn = async (link) => {
   const binding = await sendRequest(link, 'binding', [], null);
   assertBinding(binding, link.localPort);
   const challenge = await sendRequest(link, 'allocate', [TRANSPORT], null);
-  assert.equal(codeOf(stun, challenge), 401);
+  assert.equal(codeOf(challenge), 401);
   const nonce = stun.find(stun.decode(challenge), 0x0015).value.toString();
   const identity = { ...link.auth, nonce };
   const success = await sendRequest(link, 'allocate', [TRANSPORT], identity);
   const relay = assertAllocated(success, link.auth.key);
   assert.equal(relay.address, '127.0.0.1');
   const transactionId = crypto.randomBytes(12);
-  const peer = peerAttribute(stun, transactionId, link.peer.port);
+  const peer = peerAttribute(transactionId, link.peer.port);
   const attributes = [channelNumber(0x4000), peer];
   const bound = await sendRequest(link, 'channelBind', attributes, identity, {
     transactionId,
   });
-  assert.equal(codeOf(stun, bound), 0);
+  assert.equal(codeOf(bound), 0);
   const boundMessage = stun.decode(bound);
   const intact = stun.verifyIntegrity(bound, boundMessage, identity.key);
   assert.equal(intact, true);
   const outbound = link.peer.next();
-  link.deliver(channelPacket(0x4000, Buffer.from('odd')));
+  link.deliver(channelPacket(0x4000, Buffer.from('odd'), true));
   assert.equal((await outbound).toString(), 'odd');
   const inbound = link.next();
   link.peer.send(Buffer.from('five!'), relay.port);
@@ -503,7 +412,7 @@ test(
     const pair = await openTcp(t);
     const peer = await openUdp(t);
     await reserved.release();
-    const request = packet(stun, 'binding', [], null);
+    const request = packet('binding', [], null);
     const readable = once(pair.accepted, 'readable');
     pair.client.write(request);
     await readable;
@@ -686,7 +595,7 @@ test(
       [TRANSPORT],
       lowAuth,
     );
-    assert.equal(codeOf(stun, denied), 508);
+    assert.equal(codeOf(denied), 508);
     await low.stop();
     const highLogs = [];
     const high = await start(unevenOptions, threadContext(highLogs, 1, 2));
@@ -734,7 +643,7 @@ test(
     };
     const binding = await sendRequest(link, 'binding', [], null);
     assertBinding(binding, pair.port);
-    const allocate = packet(stun, 'allocate', [TRANSPORT], null);
+    const allocate = packet('allocate', [TRANSPORT], null);
     const pending = pair.next(200);
     pair.client.write(allocate);
     await assert.rejects(pending, /stream response timeout/);

@@ -9,19 +9,10 @@ const { test } = require('node:test');
 const { setTimeout: delay } = require('node:timers/promises');
 
 const { stun, IceServer } = require('../metaice.js');
+const { closeUdp, closeServer } = require('./turn-helpers.js');
 
 const TIMEOUT_MS = 2000;
 const IPV6_CODES = ['EAFNOSUPPORT', 'EADDRNOTAVAIL', 'EPROTONOSUPPORT'];
-
-const closeUdp = (socket) =>
-  new Promise((resolve, reject) => {
-    try {
-      socket.close(resolve);
-    } catch (error) {
-      if (error.code === 'ERR_SOCKET_DGRAM_NOT_RUNNING') resolve();
-      else reject(error);
-    }
-  });
 
 const createUdp = (t, type = 'udp4') => {
   const socket = dgram.createSocket({ type, ipv6Only: type === 'udp6' });
@@ -181,15 +172,6 @@ const createServer = (t, options = {}) => {
   t.after(() => server.close());
   return server;
 };
-
-const closeTcpListener = (server) =>
-  new Promise((resolve, reject) => {
-    server.close((error) => {
-      if (error?.code === 'ERR_SERVER_NOT_RUNNING') resolve();
-      else if (error) reject(error);
-      else resolve();
-    });
-  });
 
 test('STUN Binding server', { timeout: 30000 }, async (t) => {
   const isIpv6 = await supportsIpv6(t);
@@ -424,7 +406,7 @@ test('STUN Binding server', { timeout: 30000 }, async (t) => {
     'fixed and automatic ports handle a TCP bind conflict',
     async (t) => {
       const occupied = net.createServer();
-      t.after(() => closeTcpListener(occupied));
+      t.after(() => closeServer(occupied));
       const ready = once(occupied, 'listening');
       occupied.listen({ port: 0, host: '0.0.0.0' });
       await ready;
@@ -469,7 +451,7 @@ test('STUN Binding server', { timeout: 30000 }, async (t) => {
       assert.notStrictEqual(automatic.ports.udp, port);
       assert.strictEqual(automatic.ports.tcp, automatic.ports.udp);
 
-      await closeTcpListener(occupied);
+      await closeServer(occupied);
       const replacement = createServer(t, { port });
       await replacement.listen();
       await replacement.close();

@@ -10,53 +10,8 @@ const helpers = require('./turn-helpers.js');
 const { createNonce } = require('../lib/credentials.js');
 
 const { loadIce, turnOptions, clientAuth, packet, codeOf, TRANSPORT } = helpers;
-
-const closeUdp = (socket) =>
-  new Promise((resolve, reject) => {
-    try {
-      socket.close(resolve);
-    } catch (error) {
-      if (error.code === 'ERR_SOCKET_DGRAM_NOT_RUNNING') resolve();
-      else reject(error);
-    }
-  });
-
-const reservePort = async (port) => {
-  const socket = dgram.createSocket('udp4');
-  try {
-    const ready = once(socket, 'listening');
-    socket.bind(port, '127.0.0.1');
-    await ready;
-    return socket;
-  } catch (error) {
-    await closeUdp(socket);
-    throw error;
-  }
-};
-
-const reserveRange = async (t, count) => {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    const first = await reservePort(0);
-    const port = first.address().port;
-    const sockets = [first];
-    const release = () => Promise.all(sockets.map(closeUdp));
-    if (port + count > 65536) {
-      await release();
-      continue;
-    }
-    try {
-      for (let i = 1; i < count; i++) {
-        sockets.push(await reservePort(port + i));
-      }
-      t.after(release);
-      return { sockets, release, range: [port, port + count - 1] };
-    } catch (error) {
-      await release();
-      if (error.code !== 'EADDRINUSE') throw error;
-    }
-  }
-  throw new Error('No contiguous UDP relay range available');
-};
+const { expectCode, requestPeer, channelNumber, channelPacket } = helpers;
+const { closeUdp, reservePort, reserveRange } = helpers;
 
 const udp = async (t, port = 0) => {
   const socket = dgram.createSocket('udp4');
@@ -109,21 +64,21 @@ const fixture = async (t, allowPrivate = true, release = null) => {
   const port = ice.ports.udp;
   const client = await udp(t);
   const peer = await udp(t);
-  const auth = clientAuth(ice, stun, 'socket-peer');
+  const auth = clientAuth(ice, 'socket-peer');
   const exchange = async (
     method,
     attributes,
     identity = auth,
     options = {},
   ) => {
-    const buffer = packet(stun, method, attributes, identity, options);
+    const buffer = packet(method, attributes, identity, options);
     const reply = client.next();
     client.send(buffer, port);
     return reply;
   };
   const allocate = async () => {
     const reply = await exchange('allocate', [TRANSPORT]);
-    assert.equal(codeOf(stun, reply), 0);
+    assert.equal(codeOf(reply), 0);
     const message = stun.decode(reply);
     assert.equal(stun.verifyIntegrity(reply, message, auth.key), true);
     assert.equal(stun.verifyFingerprint(reply, message), true);
@@ -134,33 +89,6 @@ const fixture = async (t, allowPrivate = true, release = null) => {
   };
   await reservations.release();
   return { ...loaded, client, peer, auth, port, exchange, allocate };
-};
-
-const requestPeer = (stun, port, attributes = []) => {
-  const transactionId = crypto.randomBytes(12);
-  const peer = helpers.peerAttribute(stun, transactionId, port);
-  return { transactionId, attributes: attributes.concat([peer]) };
-};
-
-const channelNumber = (number) => {
-  const value = Buffer.alloc(4);
-  value.writeUInt16BE(number);
-  return { type: 0x000c, value };
-};
-
-const channelPacket = (number, data) => {
-  const buffer = Buffer.alloc(4 + data.length);
-  buffer.writeUInt16BE(number, 0);
-  buffer.writeUInt16BE(data.length, 2);
-  data.copy(buffer, 4);
-  return buffer;
-};
-
-const expectCode = (stun, reply, code, key) => {
-  assert.equal(codeOf(stun, reply), code);
-  const message = stun.decode(reply);
-  assert.equal(stun.verifyFingerprint(reply, message), true);
-  if (key) assert.equal(stun.verifyIntegrity(reply, message, key), true);
 };
 
 test(
@@ -174,7 +102,7 @@ test(
         const binding = await exchange('binding', [], null);
         assert.equal(stun.decode(binding).kind, 'success');
         const challenge = await exchange('allocate', [TRANSPORT], null);
-        expectCode(stun, challenge, 401);
+        expectCode(challenge, 401);
         const nonce = stun
           .find(stun.decode(challenge), 0x0015)
           .value.toString();
@@ -183,17 +111,12 @@ test(
         const success = await exchange('allocate', [TRANSPORT], identity, {
           transactionId,
         });
-        expectCode(stun, success, 0, auth.key);
+        expectCode(success, 0, auth.key);
         const repeated = await exchange('allocate', [TRANSPORT], identity, {
           transactionId,
         });
         assert.equal(success.equals(repeated), true);
-        expectCode(
-          stun,
-          await exchange('allocate', [TRANSPORT]),
-          437,
-          auth.key,
-        );
+        expectCode(await exchange('allocate', [TRANSPORT]), 437, auth.key);
         assert.equal(ice.allocations.size, 1);
         const message = stun.decode(success);
         const mapped = stun.readAddress(
@@ -216,20 +139,19 @@ test(
         const relay = await allocate();
         peer.send(Buffer.from('unauthorized'), relay.port);
         await assert.rejects(client.next(100), /timeout/);
-        const send = requestPeer(stun, peer.port, [
+        const send = requestPeer(peer.port, [
           { type: 0x0013, value: Buffer.from('send') },
         ]);
         client.send(
-          packet(stun, 'send', send.attributes, null, {
+          packet('send', send.attributes, null, {
             transactionId: send.transactionId,
             kind: 'indication',
           }),
           port,
         );
         await assert.rejects(peer.next(100), /timeout/);
-        const permission = requestPeer(stun, peer.port);
+        const permission = requestPeer(peer.port);
         expectCode(
-          stun,
           await exchange(
             'createPermission',
             permission.attributes,
@@ -241,7 +163,7 @@ test(
         );
         const peerReply = peer.next();
         client.send(
-          packet(stun, 'send', send.attributes, null, {
+          packet('send', send.attributes, null, {
             transactionId: send.transactionId,
             kind: 'indication',
           }),
@@ -262,9 +184,8 @@ test(
           otherMessage.transactionId,
         );
         assert.equal(mapped.port, secondPeer.port);
-        const binding = requestPeer(stun, peer.port, [channelNumber(0x4000)]);
+        const binding = requestPeer(peer.port, [channelNumber(0x4000)]);
         expectCode(
-          stun,
           await exchange('channelBind', binding.attributes, auth, binding),
           0,
           auth.key,
@@ -278,11 +199,10 @@ test(
         assert.equal(frame.readUInt16BE(0), 0x4000);
         assert.equal(frame.readUInt16BE(2), 5);
         assert.equal(frame.subarray(4).toString(), 'back!');
-        const channelConflict = requestPeer(stun, secondPeer.port, [
+        const channelConflict = requestPeer(secondPeer.port, [
           channelNumber(0x4000),
         ]);
         expectCode(
-          stun,
           await exchange(
             'channelBind',
             channelConflict.attributes,
@@ -292,11 +212,8 @@ test(
           400,
           auth.key,
         );
-        const peerConflict = requestPeer(stun, peer.port, [
-          channelNumber(0x4001),
-        ]);
+        const peerConflict = requestPeer(peer.port, [channelNumber(0x4001)]);
         expectCode(
-          stun,
           await exchange(
             'channelBind',
             peerConflict.attributes,
@@ -312,9 +229,8 @@ test(
         await assert.rejects(peer.next(100), /timeout/);
         peer.send(Buffer.from('expired'), relay.port);
         await assert.rejects(client.next(100), /timeout/);
-        const rebound = requestPeer(stun, peer.port, [channelNumber(0x4000)]);
+        const rebound = requestPeer(peer.port, [channelNumber(0x4000)]);
         expectCode(
-          stun,
           await exchange('channelBind', rebound.attributes, auth, rebound),
           0,
           auth.key,
@@ -325,7 +241,7 @@ test(
         allocation.tokens = 0;
         allocation.sampled = Date.now() + 10000;
         client.send(
-          packet(stun, 'send', send.attributes, null, {
+          packet('send', send.attributes, null, {
             transactionId: send.transactionId,
             kind: 'indication',
           }),
@@ -340,7 +256,6 @@ test(
         assert.equal(stats.dropped, allocation.dropped);
         const lifetime = Buffer.alloc(4);
         expectCode(
-          stun,
           await exchange('refresh', [{ type: 0x000d, value: lifetime }]),
           0,
           auth.key,
@@ -361,19 +276,16 @@ test(
             false,
           );
         }
-        expectCode(stun, await exchange('refresh', []), 437, auth.key);
+        expectCode(await exchange('refresh', []), 437, auth.key);
       },
     );
 
     await t.test(
       'authentication, private peers and required errors',
       async (t) => {
-        const { ice, stun, auth, peer, exchange, allocate } = await fixture(
-          t,
-          false,
-        );
+        const { ice, auth, peer, exchange, allocate } = await fixture(t, false);
         const wrong = { ...auth, key: crypto.randomBytes(16) };
-        expectCode(stun, await exchange('allocate', [TRANSPORT], wrong), 401);
+        expectCode(await exchange('allocate', [TRANSPORT], wrong), 401);
         const stale = {
           ...auth,
           nonce: createNonce(
@@ -383,15 +295,13 @@ test(
           ),
         };
         expectCode(
-          stun,
           await exchange('allocate', [TRANSPORT], stale),
           438,
           auth.key,
         );
         await allocate();
-        const permission = requestPeer(stun, peer.port);
+        const permission = requestPeer(peer.port);
         expectCode(
-          stun,
           await exchange(
             'createPermission',
             permission.attributes,
@@ -401,14 +311,9 @@ test(
           403,
           auth.key,
         );
-        const identity = clientAuth(ice, stun, 'wrong-owner');
-        expectCode(
-          stun,
-          await exchange('refresh', [], identity),
-          441,
-          identity.key,
-        );
-        expectCode(stun, await exchange('channelBind', []), 400, auth.key);
+        const identity = clientAuth(ice, 'wrong-owner');
+        expectCode(await exchange('refresh', [], identity), 441, identity.key);
+        expectCode(await exchange('channelBind', []), 400, auth.key);
       },
     );
 
@@ -426,20 +331,20 @@ test(
         const relay = await allocate();
         assert.equal(relay.port, occupiedPort + 1);
         const other = await udp(t);
-        const request = packet(stun, 'allocate', [TRANSPORT], auth);
+        const request = packet('allocate', [TRANSPORT], auth);
         const reply = other.next();
         other.send(request, port);
-        expectCode(stun, await reply, 486, auth.key);
-        const secondAuth = clientAuth(ice, stun, 'second-peer');
+        expectCode(await reply, 486, auth.key);
+        const secondAuth = clientAuth(ice, 'second-peer');
         const exhausted = other.next();
-        other.send(packet(stun, 'allocate', [TRANSPORT], secondAuth), port);
-        expectCode(stun, await exhausted, 508, secondAuth.key);
+        other.send(packet('allocate', [TRANSPORT], secondAuth), port);
+        expectCode(await exhausted, 508, secondAuth.key);
         const lifetime = Buffer.alloc(4);
         lifetime.writeUInt32BE(0xffffffff);
         const refreshed = await exchange('refresh', [
           { type: 0x000d, value: lifetime },
         ]);
-        expectCode(stun, refreshed, 0, auth.key);
+        expectCode(refreshed, 0, auth.key);
         assert.equal(
           stun.find(stun.decode(refreshed), 0x000d).value.readUInt32BE(0),
           config.allocationLifetime[1],
@@ -468,7 +373,7 @@ test(
     const opening = Promise.withResolvers();
     const release = () => opening.resolve();
     const f = await fixture(t, true, release);
-    const { ice, stun, client, auth, port } = f;
+    const { ice, client, auth, port } = f;
     const started = Promise.withResolvers();
     const arrived = Promise.withResolvers();
     let binds = 0;
@@ -487,13 +392,13 @@ test(
       return allocation.openRelay();
     };
     const transactionId = crypto.randomBytes(12);
-    const request = packet(stun, 'allocate', [TRANSPORT], auth, {
+    const request = packet('allocate', [TRANSPORT], auth, {
       transactionId,
     });
     client.send(request, port);
     await started.promise;
     client.send(request, port);
-    const collision = packet(stun, 'allocate', [], auth, { transactionId });
+    const collision = packet('allocate', [], auth, { transactionId });
     client.send(collision, port);
     await arrived.promise;
     assert.equal(binds, 1);
@@ -501,7 +406,7 @@ test(
     opening.resolve();
     const first = await client.next();
     const repeated = await client.next();
-    expectCode(stun, first, 0, auth.key);
+    expectCode(first, 0, auth.key);
     assert.deepEqual(repeated, first);
     await assert.rejects(client.next(100), /timeout/);
   },
@@ -513,7 +418,7 @@ test(
   async (t) => {
     const { ice, stun, client, auth, port, exchange, allocate } =
       await fixture(t);
-    const signed = packet(stun, 'allocate', [], auth);
+    const signed = packet('allocate', [], auth);
     const decoded = stun.decode(signed);
     const integrity = stun.find(decoded, 0x0008);
     const tail = stun.attribute(TRANSPORT.type, TRANSPORT.value);
@@ -523,12 +428,12 @@ test(
     ]);
     forged.writeUInt16BE(forged.length - 20, 2);
     client.send(forged, port);
-    expectCode(stun, await client.next(), 400, auth.key);
+    expectCode(await client.next(), 400, auth.key);
     assert.equal(ice.allocations.size, 0);
     await allocate();
     const transactionId = crypto.randomBytes(12);
-    const peer = helpers.peerAttribute(stun, transactionId, client.port);
-    const request = packet(stun, 'createPermission', [], auth, {
+    const peer = helpers.peerAttribute(transactionId, client.port);
+    const request = packet('createPermission', [], auth, {
       transactionId,
     });
     const message = stun.decode(request);
@@ -539,12 +444,12 @@ test(
     ]);
     permission.writeUInt16BE(permission.length - 20, 2);
     client.send(permission, port);
-    expectCode(stun, await client.next(), 400, auth.key);
+    expectCode(await client.next(), 400, auth.key);
     const allocation = ice.allocations.values().next().value;
     assert.equal(allocation.permissions.size, 0);
     const wrong = { ...auth, key: crypto.randomBytes(16) };
     const lifetime = { type: 0x000d, value: Buffer.alloc(4) };
-    expectCode(stun, await exchange('refresh', [lifetime], wrong), 401);
+    expectCode(await exchange('refresh', [lifetime], wrong), 401);
     assert.equal(ice.allocations.size, 1);
   },
 );
@@ -553,21 +458,16 @@ test(
   'UDP permission validation is atomic and blocks mapped peers',
   { timeout: 10000 },
   async (t) => {
-    const { ice, stun, auth, exchange, allocate, peer } = await fixture(
-      t,
-      false,
-    );
+    const { ice, auth, exchange, allocate, peer } = await fixture(t, false);
     await allocate();
     const transactionId = crypto.randomBytes(12);
     const allowed = helpers.peerAttribute(
-      stun,
       transactionId,
       peer.port,
       '198.51.100.1',
     );
-    const blocked = helpers.peerAttribute(stun, transactionId, peer.port);
+    const blocked = helpers.peerAttribute(transactionId, peer.port);
     expectCode(
-      stun,
       await exchange('createPermission', [allowed, blocked], auth, {
         transactionId,
       }),
@@ -578,13 +478,11 @@ test(
     assert.equal(allocation.permissions.size, 0);
     const allowedId = crypto.randomBytes(12);
     const publicPeer = helpers.peerAttribute(
-      stun,
       allowedId,
       peer.port,
       '198.51.100.1',
     );
     expectCode(
-      stun,
       await exchange('createPermission', [publicPeer], auth, {
         transactionId: allowedId,
       }),
@@ -593,14 +491,8 @@ test(
     );
     assert.equal(allocation.permissions.size, 1);
     const mappedId = crypto.randomBytes(12);
-    const mapped = helpers.peerAttribute(
-      stun,
-      mappedId,
-      peer.port,
-      '::ffff:808:808',
-    );
+    const mapped = helpers.peerAttribute(mappedId, peer.port, '::ffff:808:808');
     expectCode(
-      stun,
       await exchange('createPermission', [mapped], auth, {
         transactionId: mappedId,
       }),
@@ -608,9 +500,8 @@ test(
       auth.key,
     );
     const ipv6Id = crypto.randomBytes(12);
-    const ipv6 = helpers.peerAttribute(stun, ipv6Id, peer.port, '2001:db8::1');
+    const ipv6 = helpers.peerAttribute(ipv6Id, peer.port, '2001:db8::1');
     expectCode(
-      stun,
       await exchange('createPermission', [ipv6], auth, {
         transactionId: ipv6Id,
       }),
@@ -629,14 +520,14 @@ test(
     const opening = Promise.withResolvers();
     const release = () => opening.resolve();
     const f = await fixture(t, true, release);
-    const { ice, stun, client, auth, port, config } = f;
+    const { ice, client, auth, port, config } = f;
     ice.openRelay = async (allocation) => {
       const relay = await allocation.openRelay();
       started.resolve();
       await opening.promise;
       return relay;
     };
-    client.send(packet(stun, 'allocate', [TRANSPORT], auth), port);
+    client.send(packet('allocate', [TRANSPORT], auth), port);
     await started.promise;
     const allocation = ice.allocations.values().next().value;
     const relayPort = allocation.port;
@@ -669,7 +560,7 @@ test(
   { timeout: 10000 },
   async (t) => {
     const reservations = await reserveRange(t, 2);
-    const { ice, stun } = loadIce({
+    const { ice } = loadIce({
       ...turnOptions(),
       port: 0,
       listen: '127.0.0.1',
@@ -700,8 +591,8 @@ test(
     const port = ice.ports.udp;
     const client = await udp(t);
     await reservations.release();
-    const auth = clientAuth(ice, stun, 'pending-bind');
-    client.send(packet(stun, 'allocate', [TRANSPORT], auth), port);
+    const auth = clientAuth(ice, 'pending-bind');
+    client.send(packet('allocate', [TRANSPORT], auth), port);
     await started.promise;
     const allocation = ice.allocations.values().next().value;
     const relayPort = allocation.port;

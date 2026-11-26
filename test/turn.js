@@ -22,10 +22,10 @@ const fixture = (t, options = turnOptions()) => {
       send: (buffer) => packets.push(buffer),
     },
   };
-  const { ice, stun } = loaded;
-  const auth = clientAuth(ice, stun, 'peer');
+  const { ice } = loaded;
+  const auth = clientAuth(ice, 'peer');
   const exchange = async (method, values, identity = auth, options = {}) => {
-    const buffer = packet(stun, method, values, identity, options);
+    const buffer = packet(method, values, identity, options);
     await ice.receive(socket, buffer, REMOTE);
     return packets.at(-1);
   };
@@ -34,7 +34,7 @@ const fixture = (t, options = turnOptions()) => {
 
 const verify = (stun, buffer, key, code = 0) => {
   const message = stun.decode(buffer);
-  assert.equal(codeOf(stun, buffer), code);
+  assert.equal(codeOf(buffer), code);
   assert.equal(stun.verifyFingerprint(buffer, message), true);
   assert.equal(stun.verifyIntegrity(buffer, message, key), true);
 };
@@ -61,7 +61,7 @@ test('TURN defaults and options keep STUN independent', async (t) => {
 
 test('TURN authentication rejects invalid identities and nonces', async (t) => {
   const { ice, stun, auth, exchange, config } = fixture(t);
-  assert.equal(codeOf(stun, await exchange('allocate', [], null)), 401);
+  assert.equal(codeOf(await exchange('allocate', [], null)), 401);
   const identities = [
     { ...auth, username: 'malformed' },
     { ...auth, username: '1:peer' },
@@ -70,7 +70,7 @@ test('TURN authentication rejects invalid identities and nonces', async (t) => {
   ];
   for (const identity of identities) {
     const buffer = await exchange('allocate', [TRANSPORT], identity);
-    assert.equal(codeOf(stun, buffer), 401);
+    assert.equal(codeOf(buffer), 401);
   }
   const nonce = createNonce(config.secret, '127.0.0.1', Date.now() - 601000);
   verify(
@@ -128,7 +128,7 @@ test('authenticated errors retain integrity and fingerprint', async (t) => {
 
 test('only integrity-covered attributes affect TURN state', async (t) => {
   const { ice, stun, socket, packets, auth } = fixture(t);
-  const signed = packet(stun, 'allocate', [], auth);
+  const signed = packet('allocate', [], auth);
   const message = stun.decode(signed);
   const integrity = stun.find(message, 0x0008);
   const end = integrity.offset + 24;
@@ -139,12 +139,12 @@ test('only integrity-covered attributes affect TURN state', async (t) => {
   await ice.receive(socket, forged, REMOTE);
   verify(stun, packets.at(-1), auth.key, 400);
   assert.equal(ice.allocations.size, 0);
-  const unsigned = packet(stun, 'refresh', [], null);
+  const unsigned = packet('refresh', [], null);
   const tail = signed.subarray(20, end);
   const invalid = Buffer.concat([unsigned.subarray(0, 20), tail]);
   invalid.writeUInt16BE(invalid.length - 20, 2);
   await ice.receive(socket, invalid, REMOTE);
-  assert.equal(codeOf(stun, packets.at(-1)), 401);
+  assert.equal(codeOf(packets.at(-1)), 401);
 });
 
 test('private peer policy covers IPv4, IPv6 and mapped addresses', () => {
@@ -202,11 +202,11 @@ test('UDP allocation replay, ownership, expiry and bounded rate', async (t) => {
   });
   assert.equal(success.equals(replay), true);
   verify(stun, await exchange('allocate', [TRANSPORT]), auth.key, 437);
-  const other = clientAuth(ice, stun, 'other');
+  const other = clientAuth(ice, 'other');
   verify(stun, await exchange('refresh', [], other), other.key, 441);
   const allocation = ice.allocations.values().next().value;
   const requestId = crypto.randomBytes(12);
-  const peer = helpers.peerAttribute(stun, requestId, 42000);
+  const peer = helpers.peerAttribute(requestId, 42000);
   const permission = await exchange('createPermission', [peer], auth, {
     transactionId: requestId,
   });
@@ -216,9 +216,9 @@ test('UDP allocation replay, ownership, expiry and bounded rate', async (t) => {
   assert.ok(allocation.dropped > 0);
   const previous = packets.length;
   const sendId = crypto.randomBytes(12);
-  const destination = helpers.peerAttribute(stun, sendId, 43000);
+  const destination = helpers.peerAttribute(sendId, 43000);
   const data = { type: 0x0013, value: Buffer.from('payload') };
-  const indication = packet(stun, 'send', [destination, data], null, {
+  const indication = packet('send', [destination, data], null, {
     transactionId: sendId,
     kind: 'indication',
   });
@@ -284,11 +284,11 @@ test('Pending Allocate replay shares one bind and response', async (t) => {
     await promise;
     return { close: (done) => done() };
   };
-  const request = packet(stun, 'allocate', [TRANSPORT], auth);
+  const request = packet('allocate', [TRANSPORT], auth);
   const first = ice.receive(socket, request, REMOTE);
   const repeated = ice.receive(socket, request, REMOTE);
   assert.equal(binds, 1);
-  const another = packet(stun, 'allocate', [TRANSPORT], auth);
+  const another = packet('allocate', [TRANSPORT], auth);
   await ice.receive(socket, another, REMOTE);
   verify(stun, packets.at(-1), auth.key, 437);
   resolve();
@@ -309,18 +309,8 @@ test('Permissions enforce family, atomicity and integrity', async (t) => {
   await exchange('allocate', [TRANSPORT]);
   const allocation = ice.allocations.values().next().value;
   const transactionId = crypto.randomBytes(12);
-  const publicPeer = helpers.peerAttribute(
-    stun,
-    transactionId,
-    9000,
-    '198.51.100.1',
-  );
-  const privatePeer = helpers.peerAttribute(
-    stun,
-    transactionId,
-    9000,
-    '192.168.0.1',
-  );
+  const publicPeer = helpers.peerAttribute(transactionId, 9000, '198.51.100.1');
+  const privatePeer = helpers.peerAttribute(transactionId, 9000, '192.168.0.1');
   verify(
     stun,
     await exchange('createPermission', [publicPeer, privatePeer], auth, {
@@ -331,7 +321,7 @@ test('Permissions enforce family, atomicity and integrity', async (t) => {
   );
   assert.equal(allocation.permissions.size, 0);
   const v6Id = crypto.randomBytes(12);
-  const ipv6 = helpers.peerAttribute(stun, v6Id, 9000, '2001:db8::1');
+  const ipv6 = helpers.peerAttribute(v6Id, 9000, '2001:db8::1');
   verify(
     stun,
     await exchange('createPermission', [ipv6], auth, {
@@ -341,13 +331,8 @@ test('Permissions enforce family, atomicity and integrity', async (t) => {
     443,
   );
   const forgedId = crypto.randomBytes(12);
-  const forgedPeer = helpers.peerAttribute(
-    stun,
-    forgedId,
-    9000,
-    '198.51.100.1',
-  );
-  const signed = packet(stun, 'createPermission', [], auth, {
+  const forgedPeer = helpers.peerAttribute(forgedId, 9000, '198.51.100.1');
+  const signed = packet('createPermission', [], auth, {
     transactionId: forgedId,
   });
   const decoded = stun.decode(signed);
@@ -363,22 +348,16 @@ test('Permissions enforce family, atomicity and integrity', async (t) => {
   assert.equal(allocation.permissions.size, 0);
   const expiry = allocation.expires;
   const invalid = packet(
-    stun,
     'refresh',
     [{ type: 0x000d, value: Buffer.alloc(4) }],
     { ...auth, key: crypto.randomBytes(16) },
   );
   await ice.receive(socket, invalid, REMOTE);
-  assert.equal(codeOf(stun, packets.at(-1)), 401);
+  assert.equal(codeOf(packets.at(-1)), 401);
   assert.equal(ice.allocations.size, 1);
   assert.equal(allocation.expires, expiry);
   const permittedId = crypto.randomBytes(12);
-  const permitted = helpers.peerAttribute(
-    stun,
-    permittedId,
-    9000,
-    '198.51.100.1',
-  );
+  const permitted = helpers.peerAttribute(permittedId, 9000, '198.51.100.1');
   verify(
     stun,
     await exchange('createPermission', [permitted], auth, {
@@ -388,7 +367,7 @@ test('Permissions enforce family, atomicity and integrity', async (t) => {
   );
   assert.equal(allocation.permissions.size, 1);
   const mappedId = crypto.randomBytes(12);
-  const mapped = helpers.peerAttribute(stun, mappedId, 9000, '::ffff:808:808');
+  const mapped = helpers.peerAttribute(mappedId, 9000, '::ffff:808:808');
   verify(
     stun,
     await exchange('createPermission', [mapped], auth, {
@@ -402,7 +381,7 @@ test('Permissions enforce family, atomicity and integrity', async (t) => {
 });
 
 test('close waits for pending Allocate and replay cleanup', async (t) => {
-  const { ice, stun, auth, socket, packets } = fixture(t);
+  const { ice, auth, socket, packets } = fixture(t);
   const opening = Promise.withResolvers();
   let closed = 0;
   ice.openRelay = async (allocation) => {
@@ -415,7 +394,7 @@ test('close waits for pending Allocate and replay cleanup', async (t) => {
       },
     };
   };
-  const buffer = packet(stun, 'allocate', [TRANSPORT], auth);
+  const buffer = packet('allocate', [TRANSPORT], auth);
   const first = ice.receive(socket, buffer, REMOTE);
   const replay = ice.receive(socket, buffer, REMOTE);
   const closing = ice.close();
@@ -494,7 +473,7 @@ test('transaction collisions drop and cache stays bounded', async (t) => {
   const count = packets.length;
   await exchange('allocate', [TRANSPORT], auth, { transactionId });
   assert.equal(packets.length, count);
-  const collision = packet(stun, 'refresh', [], null, { transactionId });
+  const collision = packet('refresh', [], null, { transactionId });
   await ice.receive(socket, collision, REMOTE);
   assert.equal(packets.length, count);
   const end = 8192 - ice.responses.size;

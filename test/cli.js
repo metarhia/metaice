@@ -13,6 +13,9 @@ const { test } = require('node:test');
 const timers = require('node:timers/promises');
 
 const { stun } = require('../metaice.js');
+const helpers = require('./turn-helpers.js');
+
+const { closeUdp, closeServer, waitTcpFree } = helpers;
 
 const delay = timers.setTimeout;
 const root = path.join(__dirname, '..');
@@ -42,52 +45,6 @@ const holdPort = () =>
     server.listen(0, '127.0.0.1', () => {
       resolve(server);
     });
-  });
-
-const closeServer = (server) =>
-  new Promise((resolve, reject) => {
-    server.close((error) => {
-      if (error && error.code !== 'ERR_SERVER_NOT_RUNNING') reject(error);
-      else resolve();
-    });
-  });
-
-const listenTcp = (port) =>
-  new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once('error', reject);
-    server.listen({ port, host: '127.0.0.1' }, () => {
-      server.close((error) => {
-        if (error) reject(error);
-        else resolve();
-      });
-    });
-  });
-
-const bindTcp = async (port) => {
-  const deadline = Date.now() + 2000;
-  let failure = new Error('Port stayed busy');
-  while (Date.now() < deadline) {
-    try {
-      await listenTcp(port);
-      return;
-    } catch (error) {
-      failure = error;
-      if (error.code !== 'EADDRINUSE') throw error;
-      await delay(20);
-    }
-  }
-  throw failure;
-};
-
-const closeUdp = (socket) =>
-  new Promise((resolve, reject) => {
-    try {
-      socket.close(resolve);
-    } catch (error) {
-      if (error.code === 'ERR_SOCKET_DGRAM_NOT_RUNNING') resolve();
-      else reject(error);
-    }
   });
 
 const bindUdp = (socket) =>
@@ -246,7 +203,7 @@ test('CLI', async (t) => {
     const code = await closed;
     assert.equal(code, 0, cli.errors());
     assert.match(cli.output(), new RegExp(`tcp: ${port}`));
-    await bindTcp(port);
+    await waitTcpFree(port);
   });
 
   await t.test('exits 1 when the port is taken', async (t) => {
@@ -267,6 +224,6 @@ test('CLI', async (t) => {
     assert.equal(code, 1);
     assert.match(cli.errors(), /EADDRINUSE/);
     await closeServer(holder);
-    await bindTcp(port);
+    await waitTcpFree(port);
   });
 });
